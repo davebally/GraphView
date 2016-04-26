@@ -24,6 +24,7 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using GraphView.TSQL_Syntax_Tree;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
@@ -210,7 +211,100 @@ namespace GraphView
     /// <summary>
     /// Statements with optimization hints
     /// </summary>
-    public abstract partial class WStatementWithCtesAndXmlNamespaces : WSqlStatement { }
+    public abstract partial class WStatementWithCtesAndXmlNamespaces : WSqlStatement
+    {
+        public IList<OptimizerHint> OptimizerHints { get; set; }
+
+        // Turns T-SQL OptimizerHint into string 
+        internal static string OptimizerHintToString(OptimizerHint hint)
+        {
+            var sb = new StringBuilder(1024);
+            // Literal hint
+            if (hint is LiteralOptimizerHint)
+            {
+                sb.Append(TsqlFragmentToString.OptimizerHintKind(hint.HintKind));
+                var loh = hint as LiteralOptimizerHint;
+
+                // TODO: Only support numeric literal
+                sb.AppendFormat(" {0}",loh.Value.Value);
+            }
+            // OptimizeFor hint
+            else if (hint is OptimizeForOptimizerHint)
+            {
+                var ooh = hint as OptimizeForOptimizerHint;
+                sb.AppendFormat("OPTIMIZE FOR ");
+                if (ooh.IsForUnknown)
+                    sb.Append("UNKNOWN");
+                else
+                {
+                    sb.Append("(");
+                    for (int i = 0; i < ooh.Pairs.Count; i++)
+                    {
+                        if (i > 0)
+                            sb.Append(", ");
+                        sb.Append(ooh.Pairs[i].Variable.Name);
+
+                        // TODO: Only support value expression
+                        if (ooh.Pairs[i].Value != null && ooh.Pairs[i].Value is Literal)
+                        {
+                            if (ooh.Pairs[i].Value is StringLiteral)
+                                sb.AppendFormat(" = '{0}'", ((Literal)ooh.Pairs[i].Value).Value);
+                            else
+                                sb.AppendFormat(" = {0}", ((Literal)ooh.Pairs[i].Value).Value);
+                        }
+                        else
+                            sb.Append(" UNKNOWN");
+                    }
+                    sb.Append(")");
+
+                }
+            }
+            // Table hint
+            else if (hint is TableHintsOptimizerHint)
+            {
+                var toh = hint as TableHintsOptimizerHint;
+                sb.Append("TABLE HINT ");
+                sb.Append("(");
+                sb.Append(TsqlFragmentToString.SchemaObjectName(toh.ObjectName));
+                for (int i = 0; i < toh.TableHints.Count; i++)
+                {
+                    if (i > 0)
+                        sb.Append(", ");
+                    // TODO: Table hint in WSQL Syntax tree is incomplete
+                    sb.AppendFormat("@{0}", toh.TableHints[i].HintKind.ToString());
+                }
+                sb.Append(")");
+
+            }
+            // Regular hint
+            else
+            {
+                sb.Append(TsqlFragmentToString.OptimizerHintKind(hint.HintKind));
+            }
+            return sb.ToString();
+
+        }
+
+        // Tranlates optimizer hint list into string
+        internal string OptimizerHintListToString(string indent="")
+        {
+            if (OptimizerHints == null || !OptimizerHints.Any())
+                return "";
+            var sb = new StringBuilder(1024);
+            sb.Append("\r\n");
+            sb.AppendFormat("{0}OPTION", indent);
+            sb.Append("(");
+            for (int i = 0; i < OptimizerHints.Count; i++)
+            {
+                if (i > 0)
+                    sb.Append(", ");
+                sb.AppendFormat("{0}", OptimizerHintToString(OptimizerHints[i]));
+            }
+            sb.Append(")");
+
+            return sb.ToString();
+        }
+    }
 
     /// <summary>
     /// This class represents all T-SQL statements not identified by the current parser.
@@ -282,7 +376,7 @@ namespace GraphView
             var sb = new StringBuilder(1024);
 
             sb.AppendFormat("{0}BEGIN\r\n", indent);
-            sb.Append(StatementListToString(StatementList, indent + "    "));
+            sb.Append(StatementListToString(StatementList, indent + "  "));
             sb.Append("\r\n");
             sb.AppendFormat("{0}END", indent);
 
@@ -320,10 +414,20 @@ namespace GraphView
             var sb = new StringBuilder(1024);
 
             sb.AppendFormat("{0}WHILE ", indent);
-            sb.Append(Predicate.ToString() + "\r\n");
-            sb.Append(Statement.ToString());
-            sb.Append("\r\n");
 
+            if (Predicate.OneLine())
+            {
+                sb.Append(Predicate.ToString(""));
+            }
+            else
+            {
+                sb.Append("\r\n");
+                sb.Append(Predicate.ToString(indent + "  "));
+            }
+
+            sb.Append("\r\n");
+            sb.Append(Statement.ToString(indent));
+ 
             return sb.ToString();
         }
 
@@ -343,6 +447,68 @@ namespace GraphView
             {
                 Statement.Accept(visitor);
             }
+            base.AcceptChildren(visitor);
+        }
+    }
+
+    public partial class WIfStatement : WSqlStatement
+    {
+        public WBooleanExpression Predicate { get; set; }
+        public WSqlStatement ThenStatement { get; set; }
+        public WSqlStatement ElseStatement { get; set; }
+
+        internal override bool OneLine()
+        {
+            return false;
+        }
+
+        internal override string ToString(string indent)
+        {
+            StringBuilder sb = new StringBuilder(128);
+
+            if (Predicate.OneLine())
+            {
+                sb.AppendFormat("{0}IF {1}\r\n", indent, Predicate.ToString(""));
+            }
+            else
+            {
+                sb.AppendFormat("{0}IF \r\n", indent);
+                sb.Append(Predicate.ToString(indent + "  "));
+                sb.Append("\r\n");
+            }
+
+            sb.Append(ThenStatement.ToString(indent + "  "));
+
+            if (ElseStatement != null)
+            {
+                sb.Append("\r\n");
+                sb.AppendFormat("{0}ELSE\r\n", indent);
+
+                sb.Append(ElseStatement.ToString(indent + "  "));
+            }
+
+            return sb.ToString();
+        }
+
+        public override void Accept(WSqlFragmentVisitor visitor)
+        {
+            if (visitor != null)
+                visitor.Visit(this);
+        }
+
+        public override void AcceptChildren(WSqlFragmentVisitor visitor)
+        {
+            if (Predicate != null)
+            {
+                Predicate.Accept(visitor);
+                ThenStatement.Accept(visitor);
+            }
+
+            if (ElseStatement != null)
+            {
+                ElseStatement.Accept(visitor);
+            }
+
             base.AcceptChildren(visitor);
         }
     }

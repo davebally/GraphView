@@ -36,13 +36,13 @@ using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace GraphView
 {
-    class TranslateDataModificationVisitor : WSqlFragmentVisitor
+    internal class TranslateDataModificationVisitor : WSqlFragmentVisitor
     {
-        SqlConnection _conn;
+        public SqlTransaction Tx { get; private set; }
 
-        public TranslateDataModificationVisitor(SqlConnection conn)
+        public TranslateDataModificationVisitor(SqlTransaction tx)
         {
-            _conn = conn;
+            this.Tx = tx;
         }
         public void Invoke(WSqlFragment fragment)
         {
@@ -76,149 +76,98 @@ namespace GraphView
                 var insertEdgeStatement = statements[index] as WInsertEdgeSpecification;
                 if (insertEdgeStatement != null)
                 {
-                    result.Add(new WBeginTransactionStatement
-                    {
-                        Name = new WIdentifierOrValueExpression
-                        {
-                            Identifier = new Identifier { Value = "InsertEdgeTran" }
-                        }
-                    });
+                    //result.Add(new WBeginTransactionStatement
+                    //{
+                    //    Name = new WIdentifierOrValueExpression
+                    //    {
+                    //        Identifier = new Identifier { Value = "InsertEdgeTran" }
+                    //    }
+                    //});
                     
                     //result.Add(TranslateInsertEdge(insertEdgeStatement, false));
                     //result.Add(TranslateInsertEdge(insertEdgeStatement, true));
-                    TranslateEdgeInsert(insertEdgeStatement,result);
 
-                    result.Add(new WCommitTransactionStatement
-                    {
-                        Name = new WIdentifierOrValueExpression
-                        {
-                            Identifier = new Identifier { Value = "InsertEdgeTran" }
-                        }
-                    });
+                    var stmts = new List<WSqlStatement>();
+                    TranslateEdgeInsert(insertEdgeStatement, stmts);
+                    result.Add(new WBeginEndBlockStatement() { StatementList = stmts, });
+
+                    //result.Add(new WCommitTransactionStatement
+                    //{
+                    //    Name = new WIdentifierOrValueExpression
+                    //    {
+                    //        Identifier = new Identifier { Value = "InsertEdgeTran" }
+                    //    }
+                    //});
                     continue;
                 }
                 var deleteEdgeStatement = statements[index] as WDeleteEdgeSpecification;
                 if (deleteEdgeStatement != null)
                 {
-                    result.Add(new WBeginTransactionStatement
-                    {
-                        Name = new WIdentifierOrValueExpression
-                        {
-                            Identifier = new Identifier { Value = "DeleteEdgeTran" }
-                        }
-                    });
+                    //result.Add(new WBeginTransactionStatement
+                    //{
+                    //    Name = new WIdentifierOrValueExpression
+                    //    {
+                    //        Identifier = new Identifier { Value = "DeleteEdgeTran" }
+                    //    }
+                    //});
                     //result.Add(TranslateDeleteEdge(deleteEdgeStatement, true));
                     //result.Add(TranslateDeleteEdge(deleteEdgeStatement, false));
 
-                    TranslateEdgeDelete(deleteEdgeStatement,result);
+                    var stmts = new List<WSqlStatement>();
+                    TranslateEdgeDelete(deleteEdgeStatement, stmts);
+                    result.Add(new WBeginEndBlockStatement() { StatementList = stmts, });
 
-                    result.Add(new WCommitTransactionStatement
-                    {
-                        Name = new WIdentifierOrValueExpression
-                        {
-                            Identifier = new Identifier { Value = "DeleteEdgeTran" }
-                        }
-                    });
+                    //result.Add(new WCommitTransactionStatement
+                    //{
+                    //    Name = new WIdentifierOrValueExpression
+                    //    {
+                    //        Identifier = new Identifier { Value = "DeleteEdgeTran" }
+                    //    }
+                    //});
                     continue;
                 }
                 var deleteNodeStatement = statements[index] as WDeleteNodeSpecification;
                 if (deleteNodeStatement != null)
                 {
-                    var table = deleteNodeStatement.Target as WNamedTableReference;
-                    if (table == null)
-                        throw new GraphViewException("Target of DELETE NODE statement should be a named table reference.");
-                    WBooleanExpression cond = new WBooleanComparisonExpression
-                    {
-                        ComparisonType = BooleanComparisonType.Equals,
-                        FirstExpr = new WColumnReferenceExpression
-                        {
-                            MultiPartIdentifier = new WMultiPartIdentifier(new Identifier { Value = "InDegree"})
-                        },
-                        SecondExpr = new WValueExpression
-                        {
-                            Value = "0"
-                        }
-                    };
-                    var tableSchema = table.TableObjectName.SchemaIdentifier == null
-                        ? "dbo"
-                        : table.TableObjectName.SchemaIdentifier.Value;
-                    var tableName = table.TableObjectName.BaseIdentifier.Value;
-                    using (var command = _conn.CreateCommand())
-                    {
-                        command.CommandText = string.Format(
-                            @"SELECT [TableSchema], [TableName], [ColumnName] FROM [{3}] WHERE TableSchema = '{0}' and [TableName]='{1}' and ColumnRole={2}",
-                            tableSchema, tableName, 1, GraphViewConnection.MetadataTables[1]);
-                        using (var reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                var col = reader["ColumnName"].ToString();
-                                cond = WBooleanBinaryExpression.Conjunction(cond, new WBooleanComparisonExpression
-                                {
-                                    ComparisonType = BooleanComparisonType.Equals,
-                                    FirstExpr = new WColumnReferenceExpression
-                                    {
-                                        MultiPartIdentifier = new WMultiPartIdentifier(new Identifier { Value = col + "OutDegree" })
-                                    },
-                                    SecondExpr = new WValueExpression
-                                    {
-                                        Value = "0"
-                                    }
-
-                                });
-                            }
-
-                        }
-                    }
-                    WWhereClause checkDeleteNode = new WWhereClause
-                    {
-                        SearchCondition = new WBooleanNotExpression {Expression = cond}
-                    };
-                    if (deleteNodeStatement.WhereClause == null ||
-                        deleteNodeStatement.WhereClause.SearchCondition == null)
-                    {
-                        deleteNodeStatement.WhereClause = new WWhereClause {SearchCondition = cond};
-                    }
-                    else
-                    {
-                        checkDeleteNode = new WWhereClause
-                        {
-                            SearchCondition = new WBooleanBinaryExpression
-                            {
-                                BooleanExpressionType = BooleanBinaryExpressionType.And,
-                                FirstExpr = deleteNodeStatement.WhereClause.SearchCondition,
-                                SecondExpr = checkDeleteNode.SearchCondition
-                            }
-                        };
-                        deleteNodeStatement.WhereClause = new WWhereClause
-                        {
-                            SearchCondition = new WBooleanBinaryExpression
-                            {
-                                BooleanExpressionType = BooleanBinaryExpressionType.And,
-                                FirstExpr = deleteNodeStatement.WhereClause.SearchCondition,
-                                SecondExpr = cond
-                            }
-                        };
-                    }
-                    using (var command = _conn.CreateCommand())
-                    {
-                        command.CommandText = string.Format("SELECT InDegree FROM {0}.{1} {2}", tableSchema, tableName,
-                            checkDeleteNode.ToString());
-                        using (var reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                throw new GraphViewException(
-                                    string.Format(
-                                        "Node(s) of node table {0} being deleted still has/have ingoing or outdoing edge(s)",
-                                        tableName));
-                            }
-                        }
-                    }
+                    TranslateNodeDelete(deleteNodeStatement, result);
+                    continue;
                 }
+
                 result.Add(statements[index]);
             }
             return result;
+        }
+
+        private void CheckInsertEdgeValidity(string tableSchema, string sourceTableName, string columnName, string sinkTableName)
+        {
+            using (var command = Tx.Connection.CreateCommand())
+            {
+                command.Transaction = Tx;
+                command.Parameters.AddWithValue("@schema", tableSchema);
+                command.Parameters.AddWithValue("@tableName", sourceTableName);
+                command.Parameters.AddWithValue("@colName", columnName);
+                command.Parameters.AddWithValue("@role", WNodeTableColumnRole.Edge);
+                command.CommandText = string.Format(@"
+                    SELECT NodeColumn.Reference 
+                    FROM [{0}] as NodeTable JOIN [{1}] AS NodeColumn 
+                    ON NodeTable.TableId = NodeColumn.TableId
+                    WHERE NodeTable.TableSchema = @schema and 
+                          NodeTable.TableName = @tableName and 
+                          NodeColumn.ColumnName = @colName and
+                          NodeColumn.ColumnRole = @role", GraphViewConnection.MetadataTables[0],
+                    GraphViewConnection.MetadataTables[1]);
+                using (var reader = command.ExecuteReader())
+                {
+                    if (!reader.Read())
+                        throw new GraphViewException(
+                            string.Format("Node table {0} not exists or edge {1} not exists in node table {0}",
+                                sourceTableName, columnName));
+                    string sinkReference = reader[0].ToString();
+                    if (string.Compare(sinkTableName, sinkReference, StringComparison.OrdinalIgnoreCase) != 0)
+                        throw new GraphViewException(string.Format("Mismatch sink node table reference {0}",
+                            sinkTableName));
+                }
+            }
         }
 
         /// <summary>
@@ -234,24 +183,32 @@ namespace GraphView
             const string insertEdgeTableName = "GraphView_InsertEdgeInternalTable";
             string insertEdgeTempTable = "InsertTmp_"+Path.GetRandomFileName().Replace(".", "").Substring(0, 8);
 
-            // Wraps the select statement in a common table expression
-            var edgeSelectQueryVisitor = new InsertEdgeSelectVisitor();
-            WTableReference sinkTable;
-            List<WScalarExpression> encodeParameters;
-            var insertCommonTableExpr = edgeSelectQueryVisitor.Invoke(node.SelectInsertSource.Select, insertEdgeTempTable, out sinkTable, out encodeParameters);
             var sourceNameTable = node.Target as WNamedTableReference;
             if (sourceNameTable == null)
                 throw new GraphViewException("Source table of INSERT EDGE statement should be a named table reference.");
+            List<WScalarExpression> encodeParameters;
+            WTableReference sinkTable;
+
+            // Wraps the select statement in a common table expression
+            var edgeSelectQueryVisitor = new InsertEdgeSelectVisitor();
+            var insertCommonTableExpr = edgeSelectQueryVisitor.Invoke(node.SelectInsertSource.Select,
+                insertEdgeTempTable, sourceNameTable.TableObjectName.BaseIdentifier.Value, out sinkTable,
+                out encodeParameters);
+            
             var sinkNameTable = sinkTable as WNamedTableReference;
             if (sinkNameTable == null)
                 throw new GraphViewException("Sink table of INSERT EDGE statement should be a named table reference.");
 
+            var edgeName = node.EdgeColumn.MultiPartIdentifier.Identifiers.Last().Value;
             var tableSchema =
                     sourceNameTable.TableObjectName.SchemaIdentifier != null
                         ? sourceNameTable.TableObjectName.SchemaIdentifier.Value
                         : "dbo";
             var tableName = sourceNameTable.TableObjectName.BaseIdentifier.Value;
-            var edgeName = node.EdgeColumn.MultiPartIdentifier.Identifiers.Last().Value;
+
+            CheckInsertEdgeValidity(tableSchema, tableName, edgeName, sinkNameTable.TableObjectName.BaseIdentifier.Value);
+
+
 
             // Select Into TempTable
             //res.Add(insertCommonTableExpr);
@@ -945,7 +902,7 @@ namespace GraphView
             // Wraps the select statement in a common table expression
             WTableReference sinkTable, sourceTable;
             var deleteCommonTableExpr = ConstructDeleteEdgeSelect(node.SelectDeleteExpr,
-                node.EdgeColumn.Alias, deleteEdgeTempTable,
+                node.EdgeColumn, deleteEdgeTempTable,
                 out sinkTable, out sourceTable);
             var sourceNameTable = sourceTable as WNamedTableReference;
             if (sourceNameTable == null)
@@ -1650,18 +1607,20 @@ namespace GraphView
 
         }
 
-        private WCommonTableExpression ConstructDeleteEdgeSelect(WSelectQueryBlock node, string edgeAlias, string tempTableName
+        private WCommonTableExpression ConstructDeleteEdgeSelect(WSelectQueryBlock node, WEdgeColumnReferenceExpression edgeCol, string tempTableName
             ,out WTableReference sinkTable, out WTableReference sourceTable)
         {
             sourceTable = null;
             sinkTable = null;
+            string sourceTableName = null;
+            string sinkTableName = null;
             var sourceTableScalar = node.SelectElements[0] as WSelectScalarExpression;
             if (sourceTableScalar == null)
                 return null;
             var sourceTableColumn = sourceTableScalar.SelectExpr as WColumnReferenceExpression;
             if (sourceTableColumn == null)
                 return null;
-            var sourceTableName = sourceTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
+            sourceTableName = sourceTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
 
             var sourceNodeIdExpr = new WColumnReferenceExpression();
             foreach (var identifier in sourceTableColumn.MultiPartIdentifier.Identifiers)
@@ -1690,7 +1649,7 @@ namespace GraphView
                     if (sinkTableColumn == null)
                         return null;
 
-                    var sinkTableName = sinkTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
+                    sinkTableName = sinkTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
                     sinkTable = context[sinkTableName];
 
                     sinkNodeIdExpr = new WColumnReferenceExpression();
@@ -1717,7 +1676,7 @@ namespace GraphView
                     MultiPartIdentifier = new WMultiPartIdentifier(
                         new Identifier[]
                         {
-                            new Identifier {Value = edgeAlias},
+                            new Identifier {Value = edgeCol.Alias??string.Format("{0}_{1}_{2}",sourceTableName,edgeCol.MultiPartIdentifier.Identifiers.Last().Value,sinkTableName)},
                             new Identifier {Value = "Edgeid"}
                         }
                         )
@@ -1753,6 +1712,110 @@ namespace GraphView
             };
         }
 
+        private void TranslateNodeDelete(WDeleteNodeSpecification node, List<WSqlStatement> res)
+        {
+            var table = node.Target as WNamedTableReference;
+            if (table == null)
+                throw new GraphViewException("Target of DELETE NODE statement should be a named table reference.");
+            WBooleanExpression cond = new WBooleanComparisonExpression
+            {
+                ComparisonType = BooleanComparisonType.Equals,
+                FirstExpr = new WColumnReferenceExpression
+                {
+                    MultiPartIdentifier = new WMultiPartIdentifier(new Identifier { Value = "InDegree" })
+                },
+                SecondExpr = new WValueExpression
+                {
+                    Value = "0"
+                }
+            };
+            var tableSchema = table.TableObjectName.SchemaIdentifier == null
+                ? "dbo"
+                : table.TableObjectName.SchemaIdentifier.Value;
+            var tableName = table.TableObjectName.BaseIdentifier.Value;
+            using (var command = Tx.Connection.CreateCommand())
+            {
+                command.Transaction = Tx;
+                command.CommandText = string.Format(
+                    @"SELECT [TableSchema], [TableName], [ColumnName] FROM [{3}] WHERE TableSchema = '{0}' and [TableName]='{1}' and ColumnRole={2}",
+                    tableSchema, tableName, 1, GraphViewConnection.MetadataTables[1]);
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var col = reader["ColumnName"].ToString();
+                        cond = WBooleanBinaryExpression.Conjunction(cond, new WBooleanComparisonExpression
+                        {
+                            ComparisonType = BooleanComparisonType.Equals,
+                            FirstExpr = new WColumnReferenceExpression
+                            {
+                                MultiPartIdentifier = new WMultiPartIdentifier(new Identifier { Value = col + "OutDegree" })
+                            },
+                            SecondExpr = new WValueExpression
+                            {
+                                Value = "0"
+                            }
+
+                        });
+                    }
+
+                }
+            }
+            WWhereClause checkDeleteNode = new WWhereClause
+            {
+                SearchCondition = new WBooleanNotExpression { Expression = cond }
+            };
+            if (node.WhereClause == null ||
+                node.WhereClause.SearchCondition == null)
+            {
+                node.WhereClause = new WWhereClause { SearchCondition = cond };
+            }
+            else
+            {
+                checkDeleteNode = new WWhereClause
+                {
+                    SearchCondition = new WBooleanBinaryExpression
+                    {
+                        BooleanExpressionType = BooleanBinaryExpressionType.And,
+                        FirstExpr = node.WhereClause.SearchCondition,
+                        SecondExpr = checkDeleteNode.SearchCondition
+                    }
+                };
+                node.WhereClause = new WWhereClause
+                {
+                    SearchCondition = new WBooleanBinaryExpression
+                    {
+                        BooleanExpressionType = BooleanBinaryExpressionType.And,
+                        FirstExpr = node.WhereClause.SearchCondition,
+                        SecondExpr = cond
+                    }
+                };
+            }
+            using (var command = Tx.Connection.CreateCommand())
+            {
+                command.Transaction = Tx;
+                command.CommandText = string.Format("SELECT InDegree FROM {0}.{1} {2}", tableSchema, tableName,
+                    checkDeleteNode.ToString());
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        throw new GraphViewException(
+                            string.Format(
+                                "Node(s) of node table {0} being deleted still has/have ingoing or outdoing edge(s)",
+                                tableName));
+                    }
+                }
+            }
+
+            res.Add(new WDeleteSpecification
+            {
+                FromClause = node.FromClause,
+                Target = node.Target,
+                TopRowFilter = node.TopRowFilter,
+                WhereClause = node.WhereClause,
+            });
+        }
     }
 
 
@@ -1762,18 +1825,22 @@ namespace GraphView
         private WTableReference _sinkTable;
         private List<WScalarExpression> _edgeProperties;
         private string _tempTableName;
-        public WCommonTableExpression Invoke(WSqlFragment node, string tempTableName, out WTableReference sinkTable, out List<WScalarExpression> edgeProperties)
+        private string _sourceTableName;
+
+        public WCommonTableExpression Invoke(WSqlFragment node, string tempTableName, string sourceTableName,
+            out WTableReference sinkTable, out List<WScalarExpression> edgeProperties)
         {
-            _edgeProperties = new List<WScalarExpression>
-            {
+            _edgeProperties = new List<WScalarExpression>();
+            _tempTableName = tempTableName;
+            _sourceTableName = sourceTableName;
+            node.Accept(this);
+            sinkTable = _sinkTable;
+            _edgeProperties.Insert(0,
                 new WColumnReferenceExpression
                 {
                     MultiPartIdentifier = new WMultiPartIdentifier(new Identifier {Value = "sink"})
                 }
-            };
-            _tempTableName = tempTableName;
-            node.Accept(this);
-            sinkTable = _sinkTable;
+                );
             edgeProperties = _edgeProperties;
             return _result;
         }
@@ -1799,30 +1866,40 @@ namespace GraphView
             {
                 throw new GraphViewException("Numbers of select elements mismatch.");
             }
+            if (node.GroupByClause != null)
+            {
+                throw new GraphViewException("GROUP BY clause is not allowed in INSERT EDGE statement.");
+            }
             var sourceTableScalar = node.SelectElements[0] as WSelectScalarExpression;
             if (sourceTableScalar == null)
                 throw new GraphViewException("Source node id should be a scalar expression.");
             var sourceTableColumn = sourceTableScalar.SelectExpr as WColumnReferenceExpression;
             if (sourceTableColumn == null)
                 throw new GraphViewException("Source node id column should be a column reference expression.");
-            var sourceTableName = sourceTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
+            var sourceTableAlias = sourceTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
+            
+            var collectVarVisitor = new CollectVariableVisitor();
+            var context = collectVarVisitor.Invoke(node);
+            var sourceTable = context[sourceTableAlias] as WNamedTableReference;
+            if (sourceTable == null)
+            {
+                throw new GraphViewException("Source table of INSERT EDGE statement should be a named table reference.");
+            }
+            if (
+                string.Compare(_sourceTableName, sourceTable.TableObjectName.BaseIdentifier.Value,
+                    StringComparison.OrdinalIgnoreCase) != 0)
+                throw new GraphViewException("Source node table in the SELECT is mismatched with the INSERT source");
+
 
             var sourceNodeIdExpr = new WColumnReferenceExpression();
             foreach (var identifier in sourceTableColumn.MultiPartIdentifier.Identifiers)
                 sourceNodeIdExpr.Add(identifier);
             sourceNodeIdExpr.AddIdentifier("GlobalNodeId");
 
-            if (node.SelectElements.Count < 2)
-                throw new GraphViewException("Source and Sink tables should be specified in select elements.");
+            //if (node.SelectElements.Count < 2)
+            //    throw new GraphViewException("Source and Sink tables should be specified in select elements.");
 
-            if (node.GroupByClause != null)
-            {
-                throw new GraphViewException("GROUP BY clause is not allowed in INSERT EDGE statement.");
-            }
-            var collectVarVisitor = new CollectVariableVisitor();
-            var context = collectVarVisitor.Invoke(node);
             WColumnReferenceExpression sinkNodeIdExpr = null;
-
             for (var index = 1; index < node.SelectElements.Count; ++index)
             {
                 var element = node.SelectElements[index] as WSelectScalarExpression;
@@ -1835,8 +1912,8 @@ namespace GraphView
                     if (sinkTableColumn == null)
                         throw new GraphViewException("Sink node id column should be a column reference expression.");
 
-                    var sinkTableName = sinkTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
-                    _sinkTable = context[sinkTableName];
+                    var sinkTableAlias = sinkTableColumn.MultiPartIdentifier.Identifiers.Last().Value;
+                    _sinkTable = context[sinkTableAlias];
 
                     sinkNodeIdExpr = new WColumnReferenceExpression();
                     foreach (var identifier in sinkTableColumn.MultiPartIdentifier.Identifiers)
@@ -1849,14 +1926,6 @@ namespace GraphView
                 }
 
             }
-
-            var sourceTable = context[sourceTableName] as WNamedTableReference;
-
-            if (sourceTable == null)
-            {
-                throw new GraphViewException("Source table of INSERT EDGE statement should be a named table reference.");
-            }
-
 
             var sourceNodeId = new WSelectScalarExpression
             {

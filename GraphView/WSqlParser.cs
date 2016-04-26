@@ -99,6 +99,11 @@ namespace GraphView
 
         private WSqlStatement ParseStatement(TSqlStatement tsqlStat)
         {
+            if (tsqlStat == null)
+            {
+                return null;
+            }
+
             WSqlStatement wstat;
 
             switch (tsqlStat.GetType().Name)
@@ -106,8 +111,18 @@ namespace GraphView
                 case "SelectStatement":
                     {
                         var sel = tsqlStat as SelectStatement;
-                        wstat = ParseSelectQueryStatement(sel.QueryExpression);
+                        WSelectStatement wselstat = new WSelectStatement
+                        {
+                            FirstTokenIndex = sel.FirstTokenIndex,
+                            LastTokenIndex = sel.LastTokenIndex,
+                            Into = ParseSchemaObjectName(sel.Into),
+                            OptimizerHints = sel.OptimizerHints,
+                            QueryExpr = ParseSelectQueryStatement(sel.QueryExpression)
 
+                        };
+                        wstat = wselstat;
+
+                        //wstat = ParseSelectQueryStatement(sel.QueryExpression);
                         break;
                     }
                 case "CreateFunctionStatement":
@@ -199,6 +214,22 @@ namespace GraphView
                         wstat = wdstat;
                         break;
                     }
+                case "CreateViewStatement":
+                {
+                    var cvs = tsqlStat as CreateViewStatement;
+                    var wcvs = new WCreateViewStatement
+                    {
+                        Columns = cvs.Columns,
+                        FirstTokenIndex = cvs.FirstTokenIndex,
+                        LastTokenIndex = cvs.LastTokenIndex,
+                        SchemaObjectName = ParseSchemaObjectName(cvs.SchemaObjectName),
+                        SelectStatement = ParseSelectQueryStatement(cvs.SelectStatement.QueryExpression),
+                        ViewOptions = cvs.ViewOptions,
+                        WithCheckOption = cvs.WithCheckOption
+                    };
+                    wstat = wcvs;
+                    break;
+                }
                 case "BeginTransactionStatement":
                     {
                         var beginTranStat = tsqlStat as BeginTransactionStatement;
@@ -304,6 +335,21 @@ namespace GraphView
 
 
                         wstat = wbestat;
+                        break;
+                    }
+                case "IfStatement":
+                    {
+                        var ifSt = tsqlStat as IfStatement;
+
+                        wstat = new WIfStatement()
+                        {
+                            Predicate = ParseBooleanExpression(ifSt.Predicate),
+                            ThenStatement = ParseStatement(ifSt.ThenStatement),
+                            ElseStatement = ParseStatement(ifSt.ElseStatement),
+                            FirstTokenIndex = ifSt.FirstTokenIndex,
+                            LastTokenIndex = ifSt.LastTokenIndex
+                        };
+
                         break;
                     }
                 case "DeclareVariableStatement":

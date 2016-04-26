@@ -57,6 +57,7 @@ namespace GraphView
                 sb.AppendFormat("{0}SELECT INTO {1}\r\n", indent, Into);
             }
             sb.Append(QueryExpr.ToString(indent));
+            sb.Append(OptimizerHintListToString(indent));
 
             return sb.ToString();
         }
@@ -278,7 +279,13 @@ namespace GraphView
                 sb.Append(FromClause.ToString(indent));
             }
 
-            if (WhereClause.SearchCondition != null)
+            if (MatchClause != null)
+            {
+                sb.Append("\r\n");
+                sb.Append(MatchClause.ToString(indent));
+            }
+
+            if (WhereClause.SearchCondition != null || !string.IsNullOrEmpty(WhereClause.GhostString))
             {
                 sb.Append("\r\n");
                 sb.Append(WhereClause.ToString(indent));
@@ -353,7 +360,7 @@ namespace GraphView
 
         internal override string ToString(string indent)
         {
-            var sb = new StringBuilder(128);
+            var sb = new StringBuilder(32);
 
             sb.AppendFormat("{0}TOP ", indent);
 
@@ -364,7 +371,7 @@ namespace GraphView
             else
             {
                 sb.Append("\r\n");
-                sb.Append(Expression.ToString(indent + " "));
+                sb.Append(Expression.ToString(indent + "  "));
             }
 
             if (Percent)

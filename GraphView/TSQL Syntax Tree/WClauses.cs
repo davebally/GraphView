@@ -110,14 +110,17 @@ namespace GraphView
 
             sb.AppendFormat("{0}WHERE ", indent);
 
-            if (SearchCondition.OneLine())
+            if (SearchCondition != null)
             {
-                sb.Append(SearchCondition.ToString(""));
-            }
-            else
-            {
-                sb.Append("\r\n");
-                sb.AppendFormat(CultureInfo.CurrentCulture, SearchCondition.ToString(indent + " "));
+                if (SearchCondition.OneLine())
+                {
+                    sb.Append(SearchCondition.ToString(""));
+                }
+                else
+                {
+                    sb.Append("\r\n");
+                    sb.AppendFormat(CultureInfo.CurrentCulture, SearchCondition.ToString(indent + " "));
+                }
             }
 
             if (GhostString!=null)
@@ -444,8 +447,14 @@ namespace GraphView
 
     public partial class WMatchPath : WSqlFragment
     {
-        internal IList<Tuple<WSchemaObjectName, WEdgeColumnReferenceExpression>> PathNodeList { get; set; }
+        /// <summary>
+        /// A list of edges in the path expression, each in a pair of (source node table reference, edge column reference)
+        /// </summary>
+        internal IList<Tuple<WSchemaObjectName, WEdgeColumnReferenceExpression>> PathEdgeList { get; set; }
 
+        /// <summary>
+        /// The tail of the path expression
+        /// </summary>
         internal WSchemaObjectName Tail { get; set; }
 
         public override void Accept(WSqlFragmentVisitor visitor)
@@ -456,17 +465,41 @@ namespace GraphView
 
         public override void AcceptChildren(WSqlFragmentVisitor visitor)
         {
-            if (PathNodeList != null)
+            if (PathEdgeList != null)
             {
                 var index = 0;
-                for (var count = PathNodeList.Count; index < count; ++index)
+                for (var count = PathEdgeList.Count; index < count; ++index)
                 {
-                    PathNodeList[index].Item1.Accept(visitor);
-                    PathNodeList[index].Item2.Accept(visitor);
+                    PathEdgeList[index].Item1.Accept(visitor);
+                    PathEdgeList[index].Item2.Accept(visitor);
                 }
             }
             Tail.Accept(visitor);
             base.AcceptChildren(visitor);
+        }
+
+        internal override bool OneLine()
+        {
+            return true;
+        }
+
+        internal override string ToString(string indent)
+        {
+            StringBuilder sb = new StringBuilder(64);
+
+            sb.AppendFormat("{0}{1}-[{2}]->", 
+                indent, 
+                PathEdgeList[0].Item1.BaseIdentifier.Value, 
+                PathEdgeList[0].Item2.ToString("")
+            );
+            for (int i = 1; i < PathEdgeList.Count; i++) 
+            {
+                sb.AppendFormat("{0}-[{1}]->", PathEdgeList[i].Item1.BaseIdentifier.Value,
+                    PathEdgeList[i].Item2.ToString(""));
+            }
+            sb.Append(Tail.BaseIdentifier.Value);
+
+            return sb.ToString();
         }
     }
     public partial class WMatchClause : WSqlFragment
@@ -488,6 +521,26 @@ namespace GraphView
                     Paths[index].Accept(visitor);
             }
             base.AcceptChildren(visitor);
+        }
+
+        internal override bool OneLine()
+        {
+            return Paths != null && Paths.Count == 1;
+        }
+
+        internal override string ToString(string indent)
+        {
+            StringBuilder sb = new StringBuilder(128);
+
+            sb.AppendFormat("{0}MATCH {1}", indent, Paths[0].ToString());
+
+            for (int i = 1; i < Paths.Count; i++)
+            {
+                sb.Append("\r\n");
+                sb.AppendFormat("  {0}{1}", indent, Paths[i].ToString());
+            }
+
+            return sb.ToString();
         }
     }
 
